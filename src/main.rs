@@ -178,12 +178,6 @@ fn main() {
     let gl = Rc::new(gl);
 
     let mut egui_glow = egui_glow::winit::EguiGlow::new(window.window(), gl.clone());
-    egui_glow.painter = egui_glow::painter::Painter::new(
-        gl.clone(),
-        Some([WIDTH as i32, HEIGHT as i32]),
-        "#define APPLY_BRIGHTENING_GAMMA\n",
-    )
-    .expect("Failed to make painter");
     let mut clear = [0.1, 0.1, 0.1];
 
     // https://github.com/grovesNL/glow/blob/main/examples/hello/src/main.rs
