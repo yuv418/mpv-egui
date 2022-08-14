@@ -8,5 +8,7 @@ edition = "2021"
 [dependencies]
 libmpv-sys = { git = "https://github.com/anlumo/libmpv-rs" }
 glow = "0.11"
-glutin = "0.29"
+glutin = "0.28"
 lazy_static = "1.4.0"
+egui_glow = { version = "0.18", features = [ "winit" ] }
+egui = "0.18"

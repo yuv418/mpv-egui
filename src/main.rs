@@ -1,16 +1,20 @@
+use glow::HasContext;
 use glutin::{
-    event::{Event, WindowEvent},
+    event::{ElementState, Event, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop, EventLoopProxy},
     platform::{unix::RawHandle, ContextTraitExt},
     window::Window,
     ContextWrapper, PossiblyCurrent,
 };
+use lazy_static::lazy_static;
 use libmpv_sys::*;
 use std::{
     ffi::{c_void, CStr, CString},
     mem::transmute,
     os::raw::c_char,
     ptr::{null, null_mut},
+    rc::Rc,
+    sync::Mutex,
 };
 
 // Some of this code copied/modified from https://github.com/grovesNL/glow/blob/main/examples/hello/src/main.rs
@@ -29,7 +33,7 @@ enum MPVEvent {
 
 unsafe extern "C" fn get_proc_addr(ctx: *mut c_void, name: *const c_char) -> *mut c_void {
     let rust_name = CStr::from_ptr(name).to_str().unwrap();
-    // println!("begin get_proc_addr with name {}", rust_name);
+    // use a rwlock for real
     let window: &ContextWrapper<PossiblyCurrent, Window> = std::mem::transmute(ctx);
     let addr = window.get_proc_address(rust_name) as *mut _;
     // println!("end get_proc_addr {:?}", addr);
@@ -50,7 +54,7 @@ unsafe extern "C" fn on_mpv_render_update(ctx: *mut c_void) {
 
 fn main() {
     let (gl, shader_version, window, evloop) = unsafe {
-        let evloop = glutin::event_loop::EventLoopBuilder::<MPVEvent>::with_user_event().build();
+        let evloop = glutin::event_loop::EventLoop::<MPVEvent>::with_user_event();
         let window_builder = glutin::window::WindowBuilder::new()
             .with_title("true")
             .with_inner_size(glutin::dpi::LogicalSize::new(WIDTH, HEIGHT));
@@ -61,7 +65,7 @@ fn main() {
             .make_current()
             .expect("Failed to make window current");
         let gl = glow::Context::from_loader_function(|l| window.get_proc_address(l) as *const _);
-        (gl, "#version 410", window, evloop)
+        (gl, "#version 140", window, evloop)
     };
 
     let mpv = unsafe {
@@ -72,6 +76,27 @@ fn main() {
 
     let mut mpv_gl: *mut mpv_render_context = null_mut();
     unsafe {
+        // NOTE, these sRGB parameters do not seem to work.
+        // This is why we glDisable GL_FRAMEBUFFER_SRGB later, but I am not sure
+        // if this is even the correct approach to make MPV output SRGB.
+        let mut prop = "target-prim\0".to_owned();
+        let c_prop = prop.as_mut_ptr() as *mut _;
+        let mut val = "bt.709\0".to_owned();
+        let c_val = val.as_mut_ptr() as *mut _;
+
+        let ret = mpv_set_option_string(mpv, c_prop, c_val);
+        println!("set prop string {}", mpv_error_str(ret));
+
+        prop = "target-trc\0".to_owned();
+        val = "srgb\0".to_owned();
+        let c_prop = prop.as_mut_ptr() as *mut _;
+        let c_val = val.as_mut_ptr() as *mut _;
+        let ret = mpv_set_option_string(mpv, c_prop, c_val);
+        println!("set prop string {}", mpv_error_str(ret));
+        let mut ll = "debug\0".to_owned();
+        let c_ll = ll.as_mut_ptr() as *mut _;
+        mpv_request_log_messages(mpv, c_ll);
+
         assert!(mpv_initialize(mpv) == 0, "MPV failed to initialise!");
     };
     unsafe {
@@ -148,15 +173,47 @@ fn main() {
     ];
     unsafe { mpv_command_async(mpv, 0, mpd_cmd_args.as_mut_ptr() as *mut *const _) };
 
+    // Setup egui
+
+    let gl = Rc::new(gl);
+
+    let mut egui_glow = egui_glow::winit::EguiGlow::new(window.window(), gl.clone());
+    egui_glow.painter = egui_glow::painter::Painter::new(
+        gl.clone(),
+        Some([WIDTH as i32, HEIGHT as i32]),
+        "#define APPLY_BRIGHTENING_GAMMA\n",
+    )
+    .expect("Failed to make painter");
+    let mut clear = [0.1, 0.1, 0.1];
+
     // https://github.com/grovesNL/glow/blob/main/examples/hello/src/main.rs
     evloop.run(move |event, _, ctrl_flow| {
         *ctrl_flow = ControlFlow::Wait;
+
         match event {
             Event::LoopDestroyed => {
                 return;
             }
             Event::MainEventsCleared => window.window().request_redraw(),
             Event::RedrawRequested(_) => {
+                let egui_repaint = egui_glow.run(window.window(), |egui_ctx| {
+                    egui::Area::new("my_area")
+                        .fixed_pos(egui::pos2(100.0, 100.0))
+                        .show(egui_ctx, |ui| {
+                            egui::Frame::none()
+                                .fill(egui::Color32::LIGHT_BLUE)
+                                .inner_margin(10.0)
+                                .outer_margin(10.0)
+                                .show(ui, |ui| {
+                                    ui.heading("MPV Overlay");
+                                    if ui.button("Quit").clicked() {
+                                        println!("clicked quit");
+                                        *ctrl_flow = ControlFlow::Exit;
+                                    }
+                                })
+                        });
+                });
+
                 mpv_render_params = unsafe {
                     vec![
                         mpv_render_param {
@@ -186,17 +243,26 @@ fn main() {
                 };
                 unsafe {
                     mpv_render_context_render(mpv_gl, mpv_render_params.as_mut_ptr());
+                    egui_glow.paint(window.window());
+                    gl.disable(glow::FRAMEBUFFER_SRGB);
+                    gl.disable(glow::BLEND);
                 }
+
                 window.swap_buffers().unwrap();
             }
-            Event::WindowEvent { window_id, event } => match event {
-                WindowEvent::CloseRequested => unsafe {
-                    mpv_render_context_free(mpv_gl);
-                    mpv_detach_destroy((mpv));
-                    *ctrl_flow = ControlFlow::Exit;
-                },
-                _ => {}
-            },
+            Event::WindowEvent { window_id, event } => {
+                match event {
+                    WindowEvent::CloseRequested => unsafe {
+                        mpv_render_context_free(mpv_gl);
+                        mpv_detach_destroy(mpv);
+                        *ctrl_flow = ControlFlow::Exit;
+                    },
+                    _ => {}
+                }
+
+                egui_glow.on_event(&event);
+                window.window().request_redraw();
+            }
             Event::UserEvent(ue) => match ue {
                 MPVEvent::MPVRenderUpdate => {
                     unsafe {
@@ -210,10 +276,10 @@ fn main() {
                         match unsafe { (*mpv_event).event_id } {
                             mpv_event_id_MPV_EVENT_NONE => break,
                             mpv_event_id_MPV_EVENT_LOG_MESSAGE => {
+                                let text: &mpv_event_log_message =
+                                    unsafe { std::mem::transmute((*mpv_event).data) };
                                 println!("mpv_log {}", unsafe {
-                                    CStr::from_ptr((*mpv_event).data as *const i8)
-                                        .to_str()
-                                        .unwrap()
+                                    CStr::from_ptr(text.text).to_str().unwrap()
                                 });
                             }
                             _ => {}
