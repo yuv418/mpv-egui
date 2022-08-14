@@ -1,0 +1,12 @@
+[package]
+name = "glow-mpv"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+libmpv-sys = { git = "https://github.com/anlumo/libmpv-rs" }
+glow = "0.11"
+glutin = "0.29"
+lazy_static = "1.4.0"

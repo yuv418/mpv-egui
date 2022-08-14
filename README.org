@@ -1,0 +1,7 @@
+#+title: mpv-egui
+
+There is a lack of details on how to render MPV in Rust (successfully), so I synthesised existing examples to work in ~glutin~.
+This repo serves a a PoC on using ~libmpv-sys~ in Rust with other libraries. I cannot guarantee that my PoC is very safe, because
+of the heavy use of ~std::mem::transmute~, but the code here is functional and renders video.
+
+This repo also serves as a PoC to overlay ~egui~ onto a running video in ~libmpv-rs~.
