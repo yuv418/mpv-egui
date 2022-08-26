@@ -34,6 +34,7 @@ enum MPVEvent {
 unsafe extern "C" fn get_proc_addr(ctx: *mut c_void, name: *const c_char) -> *mut c_void {
     let rust_name = CStr::from_ptr(name).to_str().unwrap();
     // use a rwlock for real
+    println!("begin get_proc_addr {:?}", CStr::from_ptr(name));
     let window: &ContextWrapper<PossiblyCurrent, Window> = std::mem::transmute(ctx);
     let addr = window.get_proc_address(rust_name) as *mut _;
     // println!("end get_proc_addr {:?}", addr);
@@ -102,23 +103,38 @@ fn main() {
     unsafe {
         println!("raw handle {:?}", window.context().raw_handle());
     }
+    let q = "String".to_owned();
+
+    unsafe {
+        println!(
+            "addr {:?}",
+            transmute::<_, *mut c_void>(MPV_RENDER_API_TYPE_OPENGL)
+        );
+        println!("addr {:?}", transmute::<_, *mut c_void>(&window));
+    }
+
+    let proc_addr_addr = get_proc_addr as *const ();
+    println!("addr {:?}", proc_addr_addr);
+
+    let mpv_ogl_init_param = unsafe {
+        mpv_opengl_init_params {
+            get_proc_address: Some(get_proc_addr),
+            get_proc_address_ctx: transmute(&window),
+            extra_exts: null(),
+        }
+    };
 
     let mut mpv_render_params = unsafe {
-        vec![
+        let proc_addr_addr = Some(get_proc_addr);
+        println!("addr {:?}", &proc_addr_addr as *const _);
+        let vv = vec![
             mpv_render_param {
                 type_: mpv_render_param_type_MPV_RENDER_PARAM_API_TYPE,
                 data: transmute(MPV_RENDER_API_TYPE_OPENGL),
             },
             mpv_render_param {
                 type_: mpv_render_param_type_MPV_RENDER_PARAM_OPENGL_INIT_PARAMS,
-                data: transmute(&mut mpv_opengl_init_params {
-                    get_proc_address: Some(get_proc_addr),
-                    get_proc_address_ctx: std::mem::transmute(&window), /*window.context().raw_handle()
-                                                                            RawHandle::Glx(addr) => addr,
-                                                                            RawHandle::Egl(addr) => panic!("EGL not supported at this time"),
-                                                                        } as *mut _,*/
-                    extra_exts: null(),
-                }),
+                data: transmute(&mpv_ogl_init_param),
             },
             mpv_render_param {
                 type_: mpv_render_param_type_MPV_RENDER_PARAM_ADVANCED_CONTROL,
@@ -129,7 +145,8 @@ fn main() {
                 type_: 0,
                 data: null_mut(),
             },
-        ]
+        ];
+        vv
     };
 
     unsafe {
